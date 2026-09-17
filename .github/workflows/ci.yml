@@ -27,7 +27,7 @@ jobs:
         image: mongo:8.0
         ports: ['27017:27017']
         options: >-
-          --health-cmd 'mongosh --quiet --eval "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"'
+          --health-cmd "mongosh --quiet --eval 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)'"
           --health-interval 10s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
@@ -49,10 +49,10 @@ jobs:
       - run: node scripts/smoke.mjs
       - run: docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
       - name: Logs on failure
-        if: failure()
+        if: failure() && hashFiles('docker-compose.yml') != '' && hashFiles('.env') != ''
         run: docker compose logs --tail 100
       - name: Cleanup isolated CI volumes
-        if: always()
+        if: always() && hashFiles('docker-compose.yml') != '' && hashFiles('.env') != ''
         run: docker compose down -v
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_PUBLISH == 'true'
