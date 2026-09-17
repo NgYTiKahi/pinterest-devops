@@ -1,0 +1,6 @@
+# Ports must listen on the DinD container interface for the outer port forwards.
+services:
+  grafana:
+    ports: !override ['0.0.0.0:3000:3000']
+  prometheus:
+    ports: !override ['0.0.0.0:9090:9090']

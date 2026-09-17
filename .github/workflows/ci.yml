@@ -1,0 +1,76 @@
+name: CI - test and build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Terraform format, initialize provider, validate (no AWS resources)
+        run: |
+          docker run --rm -v "$PWD/infra/terraform:/infra" -w /infra hashicorp/terraform:1.13.3 fmt -check
+          docker run --rm -v "$PWD/infra/terraform:/infra" -w /infra hashicorp/terraform:1.13.3 init -backend=false -input=false
+          docker run --rm -v "$PWD/infra/terraform:/infra" -w /infra hashicorp/terraform:1.13.3 validate
+      - name: Ansible syntax check
+        run: |
+          docker build -t pins-ansible infra/ansible
+          docker run --rm -v "$PWD:/workspace:ro" pins-ansible -i inventory.ini.example deploy.yml --syntax-check
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:8.0
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd 'mongosh --quiet --eval "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"'
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - run: npm ci && npm test && npm run test:integration
+        working-directory: backend
+        env:
+          TEST_MONGODB_URI: mongodb://127.0.0.1:27017/pins_test
+      - run: npm ci && npm run build
+        working-directory: frontend
+      - run: node scripts/setup.mjs && docker compose config --quiet
+      - run: docker compose up -d --build --wait --wait-timeout 240
+      - run: node scripts/smoke.mjs
+      - run: docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 100
+      - name: Cleanup isolated CI volumes
+        if: always()
+        run: docker compose down -v
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_PUBLISH == 'true'
+    needs: [test, infrastructure]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and publish commit-tagged images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$repo/backend:$GITHUB_SHA" backend
+          docker build -t "$repo/frontend:$GITHUB_SHA" frontend
+          docker push "$repo/backend:$GITHUB_SHA"
+          docker push "$repo/frontend:$GITHUB_SHA"

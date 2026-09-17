@@ -1,0 +1,131 @@
+name: ${COMPOSE_PROJECT_NAME:-pins-local}
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+services:
+  mongodb:
+    image: mongo:8.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Run node scripts/setup.mjs --local}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Run setup}
+      MONGO_EXPORTER_PASSWORD: ${MONGO_EXPORTER_PASSWORD:?Run setup}
+    volumes:
+      - mongo-data:/data/db
+      - ./infra/mongo/init.js:/docker-entrypoint-initdb.d/01-users.js:ro
+    networks: [data]
+    healthcheck:
+      test: ['CMD-SHELL', 'mongosh --quiet --username root --password "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    mem_limit: 1g
+    cpus: 1.5
+    logging: *logging
+  backend:
+    image: ${BACKEND_IMAGE:-pins-backend:local}
+    build: ./backend
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: '8088'
+      MONGODB_URI: mongodb://pins:${MONGO_APP_PASSWORD:?Run setup}@mongodb:27017/pins?authSource=pins
+    depends_on:
+      mongodb: {condition: service_healthy}
+    networks: [web, data, monitoring]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    cpus: 1
+    logging: *logging
+  frontend:
+    image: ${FRONTEND_IMAGE:-pins-frontend:local}
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend: {condition: service_healthy}
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:8080'
+    networks: [web]
+    mem_limit: 128m
+    cpus: .5
+    security_opt: [no-new-privileges:true]
+    logging: *logging
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus', '--storage.tsdb.retention.time=7d', '--storage.tsdb.retention.size=1GB']
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - '127.0.0.1:${PROMETHEUS_PORT:-9090}:9090'
+    networks: [monitoring]
+    mem_limit: 512m
+    cpus: .5
+    logging: *logging
+  grafana:
+    image: grafana/grafana:12.1.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Run setup}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '127.0.0.1:${GRAFANA_PORT:-3000}:3000'
+    networks: [monitoring]
+    depends_on: [prometheus]
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/api/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 384m
+    cpus: .5
+    logging: *logging
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    restart: unless-stopped
+    command: ['--path.rootfs=/host', '--path.procfs=/host/proc', '--path.sysfs=/host/sys', '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($$|/)']
+    volumes:
+      - /:/host:ro
+    pid: host
+    networks: [monitoring]
+    mem_limit: 128m
+    cpus: .25
+    logging: *logging
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.44.0
+    restart: unless-stopped
+    environment:
+      MONGODB_URI: mongodb://exporter:${MONGO_EXPORTER_PASSWORD:?Run setup}@mongodb:27017/admin?authSource=admin
+    command: ['--compatible-mode', '--collector.diagnosticdata', '--collector.dbstats']
+    depends_on:
+      mongodb: {condition: service_healthy}
+    networks: [data, monitoring]
+    mem_limit: 128m
+    cpus: .25
+    logging: *logging
+volumes:
+  mongo-data:
+  prometheus-data:
+  grafana-data:
+networks:
+  web:
+  data:
+    internal: true
+  monitoring:

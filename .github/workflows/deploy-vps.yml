@@ -1,0 +1,37 @@
+name: Optional VPS deployment (no Terraform apply)
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Published 40-character commit SHA
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: pins-vps
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: vps
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy published images over verified SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "sudo bash /opt/pins/app/scripts/deploy-vps.sh '$repo/backend:$RELEASE_SHA' '$repo/frontend:$RELEASE_SHA'"

@@ -1,0 +1,8 @@
+# Run only MongoDB for native Node/Vite: -f docker-compose.yml -f docker-compose.dev.yml up -d mongodb
+services:
+  mongodb:
+    ports:
+      - '127.0.0.1:27017:27017'
+  backend:
+    ports:
+      - '127.0.0.1:8088:8088'

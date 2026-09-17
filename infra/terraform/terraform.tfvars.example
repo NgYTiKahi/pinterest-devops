@@ -1,0 +1,6 @@
+# Documentation addresses: replace only if you deliberately deploy to AWS.
+aws_region     = "ap-southeast-1"
+project_name   = "pins-demo"
+instance_type  = "t3.medium"
+admin_cidr     = "203.0.113.10/32"
+ssh_public_key = "ssh-ed25519 REPLACE_WITH_YOUR_PUBLIC_KEY"

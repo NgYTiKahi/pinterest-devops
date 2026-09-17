@@ -1,0 +1,27 @@
+groups:
+  - name: pins
+    rules:
+      - alert: ExporterOrApiDown
+        expr: up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: 'Target {{ $labels.job }} không phản hồi'
+      - alert: MongoDBDown
+        expr: mongodb_up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: 'MongoDB không phản hồi exporter'
+      - alert: HighMemoryUsage
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 90
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'RAM sử dụng trên 90%'
+      - alert: DiskAlmostFull
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Dung lượng trống dưới 10%'

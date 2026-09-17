@@ -1,0 +1,128 @@
+---
+- name: Install Docker and deploy Pins on Ubuntu 24.04
+  hosts: pins
+  become: true
+  vars:
+    app_dir: /opt/pins/app
+    source_dir: '{{ playbook_dir }}/../..'
+  pre_tasks:
+    - name: Require supported host
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version == '24.04'
+          - ansible_architecture == 'x86_64'
+        fail_msg: This playbook targets Ubuntu 24.04 amd64 from the Terraform module.
+    - name: Build source bundle on controller, excluding secrets and dependencies
+      delegate_to: localhost
+      become: false
+      run_once: true
+      block:
+        - name: Allocate archive
+          ansible.builtin.tempfile:
+            state: file
+            suffix: .tar.gz
+          register: bundle
+        - name: Archive source
+          ansible.builtin.command:
+            argv:
+              - tar
+              - --exclude=.git
+              - --exclude=node_modules
+              - --exclude=dist
+              - --exclude=.env
+              - --exclude=.terraform
+              - --exclude=*.tfstate*
+              - --exclude=*.tfvars
+              - --exclude=inventory.ini
+              - --exclude=secrets.yml
+              - -czf
+              - '{{ bundle.path }}'
+              - -C
+              - '{{ source_dir }}'
+              - .
+          changed_when: true
+  tasks:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create apt keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+    - name: Download Docker signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+    - name: Configure Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable
+        filename: docker
+        state: present
+    - name: Install Docker Engine and Compose
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+        state: present
+        update_cache: true
+    - name: Enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+    - name: Create application directory
+      ansible.builtin.file:
+        path: '{{ app_dir }}'
+        state: directory
+        mode: '0755'
+    - name: Extract application
+      ansible.builtin.unarchive:
+        src: '{{ bundle.path }}'
+        dest: '{{ app_dir }}'
+    - name: Generate secrets only on first deployment using containerized Node
+      ansible.builtin.command:
+        argv: [docker, run, --rm, '-v', '{{ app_dir }}:/workspace', '-w', /workspace, 'node:24-alpine', node, scripts/setup.mjs]
+        creates: '{{ app_dir }}/.env'
+    - name: Bind demo web to port 80
+      ansible.builtin.lineinfile:
+        path: '{{ app_dir }}/.env'
+        regexp: '^{{ item.key }}='
+        line: '{{ item.key }}={{ item.value }}'
+        mode: '0600'
+      loop:
+        - {key: COMPOSE_PROJECT_NAME, value: pins-vps}
+        - {key: BIND_ADDRESS, value: '0.0.0.0'}
+        - {key: WEB_PORT, value: '80'}
+    - name: Validate Compose before deployment
+      ansible.builtin.command: docker compose config --quiet
+      args: {chdir: '{{ app_dir }}'}
+      changed_when: false
+    - name: Build and deploy
+      ansible.builtin.command: docker compose up -d --build --wait --wait-timeout 240
+      args: {chdir: '{{ app_dir }}'}
+      register: deployment
+      changed_when: "'Started' in deployment.stderr or 'Recreated' in deployment.stderr or 'Built' in deployment.stderr or 'Created' in deployment.stderr"
+    - name: Check API and MongoDB readiness through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/health/ready
+        status_code: 200
+      register: ready
+      retries: 10
+      delay: 3
+      until: ready.status == 200
+    - name: Verify Prometheus config
+      ansible.builtin.command: docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
+      args: {chdir: '{{ app_dir }}'}
+      changed_when: false
+  post_tasks:
+    - name: Delete temporary controller archive
+      delegate_to: localhost
+      become: false
+      run_once: true
+      ansible.builtin.file:
+        path: '{{ bundle.path }}'
+        state: absent

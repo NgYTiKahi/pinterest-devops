@@ -1,0 +1,37 @@
+name: Deploy local Windows
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['CI - test and build']
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: pins-local-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    # Opt in to auto-deploy. Never execute pull-request code on a local runner.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.ENABLE_LOCAL_AUTO_DEPLOY == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: [self-hosted, Windows, X64, pins-local]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Deploy to persistent local directory
+        shell: powershell
+        env:
+          PINS_DEPLOY_DIR: ${{ vars.PINS_DEPLOY_DIR }}
+        run: |
+          if ($env:PINS_DEPLOY_DIR) {
+            ./scripts/deploy-local.ps1 -DeployDir $env:PINS_DEPLOY_DIR
+          } else {
+            ./scripts/deploy-local.ps1
+          }
